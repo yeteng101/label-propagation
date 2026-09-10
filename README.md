@@ -1,48 +1,76 @@
-# Label Propagation
+# 同步标签传播
 
-High-performance C++ implementation of synchronous label propagation for the
-DolphinDB programming challenge.
+这是 DolphinDB 编程挑战的高性能 C++ 实现。程序读取图数据 CSV，执行同步标签传播，并将最终标签写入固定文件 `output.csv`。
 
-## Build
+## 构建
 
 ```bash
 cmake -S . -B build
 cmake --build build --config Release -j
 ```
 
-The build produces the required executable:
+构建后生成题目要求的可执行文件：
 
 ```bash
 ./build/label_propagation input.csv
 ```
 
-The program writes `output.csv` in the current working directory.
+程序会在当前工作目录生成 `output.csv`。
 
-## Algorithm
+## 输入格式
 
-Each node is initialized with its input label. In every iteration, all nodes
-simultaneously choose the most frequent label among their listed neighbours.
-If several labels tie, the lexicographically smallest label is selected. The
-iteration repeats until no label changes.
+输入 CSV 包含三列，并带有一行表头：
 
-The input `neighbours` list is authoritative and already includes the node
-itself, so self is not added a second time.
+```csv
+node_id,initial_label,neighbours
+1,red,"[1,2]"
+2,black,"[1,2,3]"
+3,red,"[2,3,4]"
+4,black,"[3,4]"
+```
 
-## Implementation Notes
+- `node_id` 是节点 ID。
+- `initial_label` 是节点初始标签。
+- `neighbours` 是逗号分隔的邻居列表，并使用方括号包围。
+- 邻居列表已经包含节点自身，不需要再次加入 self。
+- `neighbours` 字段通常使用双引号包围，以正确处理其中的逗号。
 
-- The CSV is read through a read-only memory mapping.
-- Node IDs and labels are interned to compact integer IDs without copying the
-  underlying strings.
-- The graph is stored in CSR form using one flat neighbour array.
-- Label frequencies use per-worker timestamp arrays, avoiding hash tables and
-  repeated clearing during the propagation loop.
-- Nodes are updated synchronously by applying changes only after all workers
-  finish an iteration.
-- Nodes that cannot be affected by the previous iteration are omitted once the
-  number of changes becomes small.
-- Independent nodes are processed by a persistent thread pool.
+## 算法
 
-## Dependencies
+算法采用同步标签传播：
 
-No third-party libraries are used. Only the C++ standard library and CMake's
-standard `Threads` package are required.
+1. 每个节点使用输入中的初始标签。
+2. 一轮迭代中，节点统计其所有邻居的标签出现次数。
+3. 节点选择出现次数最多的标签。
+4. 如果多个标签并列最多，选择字典序最小的标签。
+5. 所有节点必须使用上一轮标签计算新标签，不能读取同一轮中已经更新的结果。
+6. 当某一轮没有任何标签变化时，算法结束。
+
+## 输出格式
+
+输出 CSV 包含两列，并按 `node_id` 字典序升序排列：
+
+```csv
+node_id,final_label
+1,black
+2,black
+3,black
+4,black
+```
+
+如果节点 ID 或标签包含逗号、双引号或换行符，输出时会自动进行 CSV 引号和双引号转义。
+
+## 实现说明
+
+- 使用只读内存映射读取 CSV，减少文件复制和系统调用。
+- 将节点 ID 和标签转换为紧凑的整数索引。
+- 使用 CSR 邻接表存储图结构，邻居数据保持连续。
+- 标签频次使用每线程独立的时间戳计数数组，避免哈希表和重复清零。
+- 所有线程完成同一轮计算后，才统一应用标签变化，保证同步更新语义。
+- 当每轮变化较少时，只检查可能受影响的节点，减少收敛末期的无效计算。
+- 使用常驻线程池并行处理节点，避免每轮重复创建线程。
+- 输出使用缓冲区批量写入，并在程序完成后立即退出。
+
+## 第三方依赖
+
+本实现没有使用第三方库，只依赖 C++ 标准库以及 CMake 提供的标准 `Threads` 组件。
